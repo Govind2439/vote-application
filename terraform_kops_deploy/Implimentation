@@ -1,0 +1,202 @@
+
+1. **Setting up the S3 bucket for Terraform state file**.
+2. **Creating an IAM policy and role for Terraform**.
+3. **Setting up Terraform backend configuration to use the S3 bucket**.
+4. **Deploying the Kubernetes cluster using Terraform**.
+5. **Deploying your application on the Kubernetes cluster**.
+
+### Step 1: Setting up the S3 Bucket for Terraform State File
+
+1. **Create an S3 Bucket**:
+   - Go to the AWS Management Console and open the S3 service.
+   - Create a new bucket, e.g., `my-terraform-state-bucket`.
+   - Enable versioning for the bucket to keep a history of your state files.
+
+2. **Create a DynamoDB Table** (for state locking):
+   - Go to the DynamoDB service.
+   - Create a new table named `terraform-locks` with a primary key named `LockID` (string).
+
+### Step 2: Creating an IAM Policy and Role for Terraform
+
+1. **Create IAM Policy**:
+   - Go to the IAM service.
+   - Create a new policy with the following JSON. This policy grants permissions to access the S3 bucket and DynamoDB table:
+---------------------------------------------------------------------------------------------------------------------------------------------------
+     {
+       "Version": "2012-10-17",
+       "Statement": [
+         {
+           "Effect": "Allow",
+           "Action": [
+             "s3:ListBucket",
+             "s3:GetObject",
+             "s3:PutObject",
+             "s3:DeleteObject"
+           ],
+           "Resource": [
+             "arn:aws:s3:::my-terraform-state-bucket",
+             "arn:aws:s3:::my-terraform-state-bucket/*"
+           ]
+         },
+         {
+           "Effect": "Allow",
+           "Action": [
+             "dynamodb:PutItem",
+             "dynamodb:GetItem",
+             "dynamodb:DeleteItem",
+             "dynamodb:Scan",
+             "dynamodb:Query",
+             "dynamodb:UpdateItem"
+           ],
+           "Resource": "arn:aws:dynamodb:<region>:<account-id>:table/terraform-locks"
+         }
+       ]
+     }
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+
+2. **Create IAM Role**:
+   - Create a new role for EC2 (or the user running Terraform).
+   - Attach the policy created above to this role.
+
+### Step 3: Setting up Terraform Backend Configuration to Use the S3 Bucket
+
+Create a `backend.tf` file in your Terraform configuration directory:
+------------------------------------------------------------------------------------------------------------------------
+terraform {
+  backend "s3" {
+    bucket         = "my-terraform-state-bucket"
+    key            = "path/to/my/terraform.tfstate"
+    region         = "us-west-2"
+    encrypt        = true
+    dynamodb_table = "terraform-locks"
+  }
+}
+-----------------------------------------------------------------------------------------------------------------------
+
+### Step 4: Deploying the Kubernetes Cluster Using Terraform
+
+Create a new Terraform configuration file `main.tf` for deploying a Kubernetes cluster using Kops:
+
+1. **Initialize Terraform Configuration**:
+   
+   terraform init
+   
+
+2. **Create a Terraform Configuration File for Kops**:
+
+Kops (Kubernetes Operations) is an open-source tool that makes it easy to create, upgrade, and manage highly available,
+production-ready Kubernetes clusters on cloud platforms such as AWS, GCP, and Azure. It's particularly popular for deploying Kubernetes clusters on AWS
+--------------------------------------------------------------------------------------------------------------------------
+provider "aws" {
+  region = "us-west-2"
+}
+
+resource "aws_s3_bucket" "kops_state_store" {
+  bucket = "my-kops-state-store"
+  acl    = "private"
+
+  versioning {
+    enabled = true
+  }
+}
+
+resource "aws_route53_zone" "main" {
+  name = "example.com"
+}
+
+resource "aws_iam_role" "kops" {
+  name = "kops"
+
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy_attachment" "kops_AmazonEC2FullAccess" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2FullAccess"
+  role       = aws_iam_role.kops.name
+}
+
+resource "aws_iam_role_policy_attachment" "kops_AmazonS3FullAccess" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+  role       = aws_iam_role.kops.name
+}
+
+resource "aws_iam_role_policy_attachment" "kops_AmazonVPCFullAccess" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonVPCFullAccess"
+  role       = aws_iam_role.kops.name
+}
+---------------------------------------------------------------------------------------------------------------------------
+
+3. **Run Terraform**:
+   
+   terraform apply
+ 
+
+4. **Install and Configure Kops**:
+   - Install Kops on your local machine.
+   - Export the state store environment variable:
+
+     
+     export KOPS_STATE_STORE=s3://my-kops-state-store
+    
+
+   - Create a Kubernetes cluster configuration using Kops:
+
+     
+     kops create cluster \
+       --name=k8s.example.com \
+       --zones=us-west-2a,us-west-2b,us-west-2c \
+       --state=s3://my-kops-state-store \
+       --node-count=2 \
+       --node-size=t2.medium \
+       --master-size=t2.medium \
+       --dns-zone=example.com
+     
+
+   - Update the cluster:
+
+     
+     kops update cluster k8s.example.com --yes
+     
+
+   - Validate the cluster:
+
+     
+     kops validate cluster
+    
+
+### Step 5: Deploying Your Application on the Kubernetes Cluster
+
+1. **Configure kubectl**:
+   - After the cluster is up, configure kubectl to use the new cluster:
+
+     kops export kubecfg --name k8s.example.com
+     
+
+2. **Deploy Your Application**:
+   - Use the Kubernetes configuration files (`.yaml` files) to deploy your application components (Redis, PostgreSQL, Worker, Voting App, Result App).
+
+   - Apply the configuration:
+
+     kubectl apply -f redis-deployment.yaml
+
+   - Repeat for PostgreSQL, Worker, Voting App, and Result App.
+
+### Step 6: Ensuring Security for Terraform State File
+
+- **Enable Encryption**: Ensure that the S3 bucket is encrypted.
+- **Use IAM Policies**: Use specific IAM policies to restrict access to the S3 bucket and DynamoDB table.
+- **Enable Logging**: Enable logging for S3 bucket access to monitor any unauthorized access attempts.
+- **Rotate IAM Credentials**: Regularly rotate IAM credentials used by Terraform to ensure security.
